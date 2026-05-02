@@ -3,173 +3,617 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mega Millions Fluid Forecast</title>
+    <title>Mega Millions · Tri-Model Prediction System</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
-  <body style="margin:0;background:#060f1a;">
+  <body style="margin:0;background:#020812;">
     <div id="root"></div>
     <script type="text/babel">
-      const { useEffect, useRef, useState } = React;
+      const { useState, useMemo, useEffect, useCallback } = React;
 
-      const BALL_COUNT = 70;
-      const MEGA_BALL_COUNT = 25;
+      const BALL_DATA = [
+        [1,242,1],[2,267,29],[3,258,5],[4,268,9],[5,258,5],[6,251,13],[7,246,1],
+        [8,253,15],[9,238,31],[10,281,39],[11,270,11],[12,248,17],[13,250,9],
+        [14,269,49],[15,244,5],[16,250,1],[17,285,3],[18,257,5],[19,229,13],
+        [20,274,11],[21,250,3],[22,265,5],[23,226,45],[24,268,3],[25,255,21],
+        [26,249,15],[27,255,9],[28,253,9],[29,269,77],[30,245,13],[31,288,7],
+        [32,252,1],[33,237,5],[34,222,21],[35,258,1],[36,246,1],[37,241,5],
+        [38,271,3],[39,267,17],[40,255,1],[41,233,9],[42,268,5],[43,242,1],
+        [44,253,3],[45,236,7],[46,272,37],[47,236,27],[48,265,19],[49,233,3],
+        [50,247,11],[51,210,11],[52,206,9],[53,180,9],[54,155,15],[55,140,11],
+        [56,169,1],[57,89,3],[58,104,1],[59,89,21],[60,76,7],[61,81,51],
+        [62,94,3],[63,85,7],[64,93,29],[65,74,7],[66,101,25],[67,68,17],
+        [68,87,7],[69,88,3],[70,83,27],
+      ];
+      const MEGA_DATA = [
+        [1,117,21],[2,100,5],[3,117,81],[4,108,11],[5,85,25],[6,105,5],
+        [7,113,1],[8,97,3],[9,116,13],[10,110,9],[11,100,77],[12,98,1],
+        [13,103,25],[14,91,19],[15,107,7],[16,69,9],[17,81,7],[18,80,37],
+        [19,82,23],[20,76,87],[21,83,23],[22,89,65],[23,61,17],[24,95,11],
+      ];
+      const ENTANGLED_PAIRS = [[18,31],[29,32],[17,21],[8,10],[16,36],[4,34],[6,26],[10,40],[14,46],[31,46]];
+      const JACKPOT_M = 163;
+      const TOTAL_DRAWS = 3019;
 
-      function randomInt(min, max) {
-        return Math.floor(Math.random() * (max - min + 1)) + min;
+      function modelFluid(data, poolSize, ballsPerDraw) {
+        const freqs = data.map(d => d[1]);
+        const fMean = freqs.reduce((a,b)=>a+b,0)/freqs.length;
+        const fMax  = Math.max(...freqs), fMin = Math.min(...freqs);
+        const rho=1, mu=0.08, L=poolSize;
+        return data.map(([num,freq,ago]) => {
+          const P  = freq/fMean;
+          const ei = poolSize/ballsPerDraw;
+          const v  = Math.min(ei/(ago+1), 3.0);
+          const Re = rho*v*L/mu;
+          const B  = P + 0.5*rho*v*v;
+          const w  = Math.abs(P-1);
+          const od = ago>ei*2 ? 0.25*Math.min(ago/(ei*8),0.5) : 0;
+          const score = 0.38*v + 0.30*P + 0.18*(1/(w+0.4)) + 0.09*(freq/fMax) + 0.05*((freq-fMin)/(fMax-fMin+1)) + od;
+          const regime = Re>4000?"turbulent":Re>2300?"transitional":"laminar";
+          return { num, freq, ago, score, P, v, Re, B, w, regime,
+                   metrics:[["Pressure P",P.toFixed(4)],["Velocity v",v.toFixed(4)],
+                            ["Reynolds Re",Math.round(Re)],["Bernoulli B",B.toFixed(4)],
+                            ["Vorticity w",w.toFixed(4)],["NS-Score",score.toFixed(5)]] };
+        });
       }
 
-      function generatePick() {
-        const numbers = new Set();
-        while (numbers.size < 5) numbers.add(randomInt(1, BALL_COUNT));
-        return {
-          numbers: Array.from(numbers).sort((a, b) => a - b),
-          megaBall: randomInt(1, MEGA_BALL_COUNT),
+      function modelSmart(data, poolSize, ballsPerDraw) {
+        const freqs = data.map(d=>d[1]);
+        const fMax  = Math.max(...freqs);
+        const ei    = poolSize/ballsPerDraw;
+        const popularityWeight = (n) => {
+          let w = 1.0;
+          if (n <= 31)  w *= 1.85;
+          if (n <= 12)  w *= 1.20;
+          if (n % 10 === 0) w *= 1.30;
+          if ([7,11,13,17,21,23].includes(n)) w *= 1.40;
+          return w;
         };
+        return data.map(([num,freq,ago]) => {
+          const compression = Math.max(ago - ei, 0);
+          const springE    = 0.5 * compression * compression / (ei * ei);
+          const expectedFreq = TOTAL_DRAWS / poolSize * ballsPerDraw;
+          const freqDeficit  = Math.max(expectedFreq - freq, 0) / expectedFreq;
+          const pop    = popularityWeight(num);
+          const unpop  = 1 / pop;
+          const recencyPenalty = ago < 3 ? 0.15 * (3 - ago) : 0;
+          const evBonus = JACKPOT_M > 700 ? 0.1 : JACKPOT_M > 400 ? 0.05 : 0;
+          const score = 0.35*springE + 0.25*unpop + 0.20*freqDeficit
+                      + 0.15*((freq-Math.min(...freqs))/(fMax-Math.min(...freqs)+1))
+                      + 0.05*evBonus - recencyPenalty;
+          const tag = pop>1.5?"Overplayed":pop>1.2?"Popular":"Contrarian";
+          return { num, freq, ago, score, springE, unpop, freqDeficit, pop, tag,
+                   metrics:[["Spring Energy",springE.toFixed(4)],["Unpopularity",unpop.toFixed(4)],
+                            ["Freq Deficit",freqDeficit.toFixed(4)],["Pop Weight",pop.toFixed(2)],
+                            ["EV Bonus",evBonus.toFixed(2)],["Smart Score",score.toFixed(5)]] };
+        });
       }
 
-      function FluidBall({ value, isMega, style }) {
+      function modelQuantum(data, poolSize, ballsPerDraw) {
+        const freqs = data.map(d=>d[1]);
+        const fTotal = freqs.reduce((a,b)=>a+b,0);
+        const ei = poolSize/ballsPerDraw;
+        const entangleBoost = {};
+        ENTANGLED_PAIRS.forEach(([a,b]) => {
+          entangleBoost[a] = (entangleBoost[a]||0) + 0.08;
+          entangleBoost[b] = (entangleBoost[b]||0) + 0.08;
+        });
+        return data.map(([num,freq,ago]) => {
+          const amplitude = Math.sqrt(freq / fTotal);
+          const theta = (2 * Math.PI * ago) / ei;
+          const psiReal = amplitude * Math.cos(theta);
+          const psiImag = amplitude * Math.sin(theta);
+          const probRaw = psiReal*psiReal + psiImag*psiImag;
+          const interference = Math.cos(theta);
+          const expectedF   = fTotal / poolSize;
+          const barrier     = Math.max(expectedF - freq, 0) / expectedF;
+          const tunneling   = Math.exp(-1.8 * barrier) * 0.12;
+          const decoherence = ago < 4 ? Math.exp(-(4-ago)*0.4) : 1.0;
+          const entanglement = entangleBoost[num] || 0;
+          const omega  = 2*Math.PI/ei;
+          const Ekin   = 0.5 * 0.5 * omega * omega * amplitude * amplitude;
+          const Etotal = Ekin + 1/(ago+1);
+          const score = (probRaw * (1 + interference * 0.5) + tunneling + entanglement)
+                      * decoherence + 0.15 * Etotal;
+          const state = ago < 4 ? "COLLAPSED" : interference > 0.3 ? "RESONANT"
+                      : interference < -0.3 ? "DESTRUCTIVE" : "SUPERPOSED";
+          return { num, freq, ago, score, amplitude, theta, probRaw, interference,
+                   tunneling, decoherence, entanglement, Etotal, state,
+                   metrics:[["Amplitude |psi|",amplitude.toFixed(5)],
+                            ["Phase theta",(theta%(2*Math.PI)).toFixed(4)],
+                            ["Interference",interference.toFixed(4)],
+                            ["Tunneling",tunneling.toFixed(4)],
+                            ["Decoherence",decoherence.toFixed(4)],
+                            ["QE Score",score.toFixed(5)]] };
+        });
+      }
+
+      function applyBalanceFilter(candidates) {
+        const pool = candidates.slice(0, 20);
+        let best = null, bestBalance = -Infinity;
+        const top12 = pool.slice(0,12).map(s=>s.num);
+        for (let a=0;a<top12.length;a++)
+        for (let b=a+1;b<top12.length;b++)
+        for (let c=b+1;c<top12.length;c++)
+        for (let d=c+1;d<top12.length;d++)
+        for (let e=d+1;e<top12.length;e++) {
+          const combo = [top12[a],top12[b],top12[c],top12[d],top12[e]];
+          const sum   = combo.reduce((x,y)=>x+y,0);
+          const odds  = combo.filter(n=>n%2!==0).length;
+          const lows  = combo.filter(n=>n<=35).length;
+          const balance = (sum>=100&&sum<=175?2:0)+(odds>=2&&odds<=3?1.5:0)+(lows>=2&&lows<=3?1.5:0)
+                        + pool.filter(s=>combo.includes(s.num)).reduce((x,s)=>x+s.score,0)*0.5;
+          if (balance > bestBalance) { bestBalance=balance; best=combo; }
+        }
+        return best ? best.sort((a,b)=>a-b) : candidates.slice(0,5).map(s=>s.num).sort((a,b)=>a-b);
+      }
+
+      const THEME = {
+        fluid:   { primary:"#00e5ff", secondary:"#0090b8", glow:"rgba(0,229,255,0.4)",  bg:"rgba(0,40,80,0.7)",  border:"rgba(0,200,255,0.25)" },
+        smart:   { primary:"#00e676", secondary:"#007a40", glow:"rgba(0,230,118,0.4)",  bg:"rgba(0,50,20,0.7)",  border:"rgba(0,200,100,0.25)" },
+        quantum: { primary:"#e040fb", secondary:"#7b1fa2", glow:"rgba(224,64,251,0.4)", bg:"rgba(40,0,60,0.7)",  border:"rgba(200,50,250,0.25)" },
+        gold:    { primary:"#ffd600", glow:"rgba(255,214,0,0.4)" },
+      };
+      const MODEL_THEMES = ["fluid","smart","quantum"];
+      const MODEL_LABELS = ["Fluid Dynamics","Smart Play","Quantum"];
+      const MODEL_SUBTITLES = [
+        "Navier-Stokes · Bernoulli · Reynolds",
+        "Spring Pressure · Split Avoidance · EV Filter",
+        "Wave Function · Entanglement · Tunneling",
+      ];
+
+      function Ball({num, modelIdx, size=60, showRank=false, rank=0, freq, isMega=false, selectedBall, setSelectedBall}) {
+        const t   = isMega ? THEME.gold : THEME[MODEL_THEMES[modelIdx]];
+        const sel = selectedBall && selectedBall.modelIdx===modelIdx && selectedBall.num===num;
         return (
-          <div style={{
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            width: 56, height: 56, borderRadius: "50%",
-            background: isMega
-              ? "radial-gradient(circle at 35% 35%, #ff9a3c, #c0392b)"
-              : "radial-gradient(circle at 35% 35%, #4fc3f7, #1565c0)",
-            color: "#fff", fontWeight: "bold", fontSize: 20,
-            boxShadow: isMega ? "0 4px 16px rgba(192,57,43,0.5)" : "0 4px 16px rgba(21,101,192,0.4)",
-            margin: "0 6px", transition: "transform 0.3s ease", ...style,
-          }}>
-            {value}
+          <div onClick={()=>setSelectedBall(sel?null:{modelIdx,num})}
+            style={{textAlign:"center",cursor:"pointer",userSelect:"none"}}>
+            {showRank && <div style={{fontSize:"7px",color:"#1e3a50",marginBottom:"3px"}}>#{rank}</div>}
+            <div style={{
+              width:`${size}px`,height:`${size}px`,borderRadius:"50%",
+              background:`radial-gradient(circle at 35% 35%,${isMega?"#1a0800":"#010610"},#010408)`,
+              border:`${sel?"3":"2"}px solid ${t.primary}`,
+              boxShadow:sel?`0 0 0 3px ${t.glow},0 0 25px ${t.glow}`:`0 0 15px ${t.glow}`,
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:`${size*0.32}px`,fontWeight:"900",color:t.primary,
+              margin:"0 auto",transition:"all 0.2s",
+            }}>{num}</div>
+            {freq!==undefined && <div style={{fontSize:"6px",color:"#1a3050",marginTop:"2px"}}>{freq}x</div>}
           </div>
         );
       }
 
-      function WaveCanvas({ active }) {
-        const canvasRef = useRef(null);
-        const animRef = useRef(null);
-        useEffect(() => {
-          const canvas = canvasRef.current;
-          const ctx = canvas.getContext("2d");
-          let t = 0;
-          function draw() {
-            const { width, height } = canvas;
-            ctx.clearRect(0, 0, width, height);
-            for (let wave = 0; wave < 3; wave++) {
-              ctx.beginPath();
-              const amp = active ? 18 - wave * 4 : 6 - wave;
-              const freq = 0.04 + wave * 0.01;
-              const speed = active ? 0.06 + wave * 0.02 : 0.02;
-              const yBase = height * (0.45 + wave * 0.12);
-              const alpha = active ? 0.35 - wave * 0.08 : 0.15 - wave * 0.03;
-              ctx.moveTo(0, yBase);
-              for (let x = 0; x <= width; x++) {
-                ctx.lineTo(x, yBase + Math.sin(x * freq + t * (speed * 60)) * amp);
-              }
-              ctx.lineTo(width, height);
-              ctx.lineTo(0, height);
-              ctx.closePath();
-              ctx.fillStyle = `rgba(79,195,247,${alpha})`;
-              ctx.fill();
-            }
-            t += 1 / 60;
-            animRef.current = requestAnimationFrame(draw);
-          }
-          animRef.current = requestAnimationFrame(draw);
-          return () => cancelAnimationFrame(animRef.current);
-        }, [active]);
-        return (
-          <canvas ref={canvasRef} width={520} height={160}
-            style={{ display: "block", width: "100%", borderRadius: 12 }} />
-        );
-      }
+      function TriModelPredictor() {
+        const [activeTab, setActiveTab] = useState("compare");
+        const [selectedBall, setSelectedBall] = useState(null);
+        const [tick, setTick] = useState(0);
+        const [showEV, setShowEV] = useState(false);
 
-      function MegaMillionsFluid() {
-        const [pick, setPick] = useState(null);
-        const [animating, setAnimating] = useState(false);
-        const [history, setHistory] = useState([]);
+        useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),2000); return ()=>clearInterval(id); },[]);
 
-        function handleDraw() {
-          setAnimating(true);
-          setPick(null);
-          setTimeout(() => {
-            const result = generatePick();
-            setPick(result);
-            setHistory(prev => [result, ...prev].slice(0, 5));
-            setAnimating(false);
-          }, 1200);
-        }
+        const fluidBalls   = useMemo(()=>modelFluid(BALL_DATA,70,5),[]);
+        const smartBalls   = useMemo(()=>modelSmart(BALL_DATA,70,5),[]);
+        const quantumBalls = useMemo(()=>modelQuantum(BALL_DATA,70,5),[]);
+        const fluidMB      = useMemo(()=>modelFluid(MEGA_DATA,24,1),[]);
+        const smartMB      = useMemo(()=>modelSmart(MEGA_DATA,24,1),[]);
+        const quantumMB    = useMemo(()=>modelQuantum(MEGA_DATA,24,1),[]);
+
+        const predictions = useMemo(()=>{
+          const fTop = [...fluidBalls].sort((a,b)=>b.score-a.score);
+          const sTop = [...smartBalls].sort((a,b)=>b.score-a.score);
+          const qTop = [...quantumBalls].sort((a,b)=>b.score-a.score);
+          return [
+            { main: fTop.slice(0,5).map(s=>s.num).sort((a,b)=>a-b), mega: [...fluidMB].sort((a,b)=>b.score-a.score)[0].num },
+            { main: applyBalanceFilter(sTop), mega: [...smartMB].sort((a,b)=>b.score-a.score)[0].num },
+            { main: qTop.slice(0,5).map(s=>s.num).sort((a,b)=>a-b), mega: [...quantumMB].sort((a,b)=>b.score-a.score)[0].num },
+          ];
+        },[fluidBalls,smartBalls,quantumBalls,fluidMB,smartMB,quantumMB]);
+
+        const allScores = [fluidBalls, smartBalls, quantumBalls];
+        const allMB     = [fluidMB, smartMB, quantumMB];
+
+        const jackpotEV = (JACKPOT_M*1e6*0.60*0.63)/302575350;
+        const netEV = jackpotEV - 2;
+
+        const panel = (theme="fluid") => ({
+          background: THEME[theme].bg,
+          border:`1px solid ${THEME[theme].border}`,
+          borderRadius:"8px", padding:"14px", marginBottom:"12px",
+          backdropFilter:"blur(8px)", position:"relative", zIndex:1,
+        });
+        const lbl = (color="#2a5a90") => ({
+          fontSize:"8px", letterSpacing:"0.35em", color,
+          textTransform:"uppercase", marginBottom:"10px", display:"block",
+        });
+
+        const B = (props) => <Ball {...props} selectedBall={selectedBall} setSelectedBall={setSelectedBall}/>;
 
         return (
-          <div style={{
-            maxWidth: 560, margin: "40px auto", fontFamily: "system-ui, sans-serif",
-            background: "#0d1b2a", borderRadius: 20, padding: 32,
-            boxShadow: "0 8px 40px rgba(0,0,0,0.6)", color: "#e0f7fa",
-          }}>
-            <h1 style={{ textAlign: "center", fontSize: 26, letterSpacing: 1, marginBottom: 4, color: "#4fc3f7" }}>
-              Mega Millions
-            </h1>
-            <p style={{ textAlign: "center", color: "#78909c", fontSize: 13, marginBottom: 24 }}>
-              Fluid Dynamics Forecast
-            </p>
+          <div style={{background:"linear-gradient(160deg,#020812 0%,#05101e 40%,#030a18 100%)",
+            minHeight:"100vh",fontFamily:"'Courier New',monospace",color:"#8ab4d8",padding:"16px"}}>
+            <style>{`
+              @keyframes shimmer{0%{background-position:0% 50%}100%{background-position:300% 50%}}
+              @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+              @keyframes flowIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+              @keyframes scanline{0%{transform:translateY(-100%)}100%{transform:translateY(100vh)}}
+              .tab-s{animation:flowIn 0.3s ease}
+            `}</style>
 
-            <WaveCanvas active={animating} />
-
-            <div style={{ textAlign: "center", margin: "28px 0 20px" }}>
-              {pick && !animating ? (
-                <div>
-                  <div style={{ display: "flex", justifyContent: "center", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
-                    {pick.numbers.map(n => <FluidBall key={n} value={n} />)}
-                    <span style={{ color: "#78909c", fontSize: 22, margin: "0 4px" }}>+</span>
-                    <FluidBall value={pick.megaBall} isMega />
-                  </div>
-                  <p style={{ color: "#78909c", fontSize: 12, marginTop: 12 }}>
-                    White balls &nbsp;|&nbsp; <span style={{ color: "#ff9a3c" }}>Mega Ball</span>
-                  </p>
-                </div>
-              ) : animating ? (
-                <div style={{ color: "#4fc3f7", fontSize: 16, letterSpacing: 2 }}>Simulating fluid dynamics…</div>
-              ) : (
-                <div style={{ color: "#546e7a", fontSize: 15 }}>Press <strong>Draw</strong> to generate a pick</div>
-              )}
-            </div>
-
-            <div style={{ textAlign: "center" }}>
-              <button onClick={handleDraw} disabled={animating} style={{
-                padding: "12px 40px", fontSize: 16, borderRadius: 30, border: "none",
-                background: animating ? "#37474f" : "linear-gradient(135deg, #1565c0, #4fc3f7)",
-                color: "#fff", cursor: animating ? "not-allowed" : "pointer",
-                boxShadow: animating ? "none" : "0 4px 18px rgba(79,195,247,0.4)",
-                transition: "all 0.2s",
-              }}>
-                {animating ? "Drawing…" : "Draw"}
-              </button>
-            </div>
-
-            {history.length > 0 && (
-              <div style={{ marginTop: 32 }}>
-                <h3 style={{ fontSize: 13, color: "#546e7a", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-                  Recent Picks
-                </h3>
-                {history.map((h, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, opacity: 1 - i * 0.15 }}>
-                    {h.numbers.map(n => <FluidBall key={n} value={n} style={{ width: 36, height: 36, fontSize: 13 }} />)}
-                    <span style={{ color: "#546e7a", fontSize: 14 }}>+</span>
-                    <FluidBall value={h.megaBall} isMega style={{ width: 36, height: 36, fontSize: 13 }} />
+            {/* Header */}
+            <div style={{textAlign:"center",marginBottom:"16px"}}>
+              <div style={{fontSize:"clamp(13px,3vw,20px)",fontWeight:"900",letterSpacing:"0.18em",textTransform:"uppercase",
+                background:"linear-gradient(90deg,#00e5ff,#00e676,#e040fb,#00e5ff)",
+                backgroundSize:"300% 100%",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",
+                animation:"shimmer 5s linear infinite"}}>
+                MEGA MILLIONS · TRI-MODEL PREDICTION SYSTEM
+              </div>
+              <div style={{fontSize:"8px",color:"#2a4a6a",letterSpacing:"0.25em",marginTop:"4px"}}>
+                THREE INDEPENDENT MODELS · {TOTAL_DRAWS.toLocaleString()} DRAWS · SEP 1996 - APR 2026
+              </div>
+              <div style={{display:"flex",justifyContent:"center",gap:"8px",marginTop:"8px",flexWrap:"wrap"}}>
+                {[0,1,2].map(i=>(
+                  <div key={i} style={{background:THEME[MODEL_THEMES[i]].bg,border:`1px solid ${THEME[MODEL_THEMES[i]].border}`,
+                    borderRadius:"16px",padding:"4px 12px",textAlign:"center",minWidth:"130px"}}>
+                    <div style={{fontSize:"9px",color:THEME[MODEL_THEMES[i]].primary,fontWeight:"bold"}}>{MODEL_LABELS[i]}</div>
+                    <div style={{fontSize:"7px",color:"#1e3a50",marginTop:"1px"}}>{MODEL_SUBTITLES[i]}</div>
                   </div>
                 ))}
+                <div onClick={()=>setShowEV(!showEV)} style={{
+                  background:netEV>0?"rgba(0,50,20,0.7)":"rgba(50,10,0,0.7)",
+                  border:`1px solid ${netEV>0?"rgba(0,200,100,0.3)":"rgba(200,50,0,0.3)"}`,
+                  borderRadius:"16px",padding:"4px 12px",cursor:"pointer",minWidth:"110px",textAlign:"center"}}>
+                  <div style={{fontSize:"9px",color:netEV>0?"#00e676":"#ff6b35",fontWeight:"bold"}}>
+                    {netEV>0?"EV POSITIVE":"EV NEGATIVE"}
+                  </div>
+                  <div style={{fontSize:"7px",color:"#1e3a50"}}>${JACKPOT_M}M · click</div>
+                </div>
+              </div>
+              {showEV && (
+                <div style={{...panel(netEV>0?"smart":"fluid"),maxWidth:"400px",margin:"8px auto 0",textAlign:"left"}}>
+                  <span style={lbl(netEV>0?"#00e676":"#ff6b35")}>Expected Value Analysis</span>
+                  {[["Jackpot",`$${JACKPOT_M}M`],["Lump sum (60%)",`$${(JACKPOT_M*0.6).toFixed(1)}M`],
+                    ["After tax (63%)",`$${(JACKPOT_M*0.6*0.63).toFixed(1)}M`],
+                    ["Odds","1 in 302,575,350"],["EV per $2",`$${jackpotEV.toFixed(4)}`],
+                    ["Net EV",`${netEV>=0?"+":""}$${netEV.toFixed(4)}`],["Break-even","~$700M"]
+                  ].map(([k,v])=>(
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"2px 0",
+                      borderBottom:"1px solid rgba(0,100,200,0.1)"}}>
+                      <span style={{fontSize:"9px",color:"#2a5070"}}>{k}</span>
+                      <span style={{fontSize:"9px",color:k==="Net EV"?(netEV>=0?"#00e676":"#ff6b35"):"#82b1ff"}}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{fontSize:"7px",color:"#0c1d2e",marginTop:"6px",letterSpacing:"0.12em"}}>
+                ENTERTAINMENT ONLY · EACH DRAW IS STATISTICALLY INDEPENDENT · 1-IN-302,575,350 ODDS
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div style={{display:"flex",gap:"6px",justifyContent:"center",marginBottom:"14px",flexWrap:"wrap"}}>
+              {["compare","fluid","smart","quantum"].map((t,i)=>{
+                const active = activeTab===t;
+                const tk = i===0?"fluid":MODEL_THEMES[i-1];
+                return (
+                  <button key={t} onClick={()=>setActiveTab(t)} style={{
+                    padding:"6px 14px",fontSize:"9px",letterSpacing:"0.2em",textTransform:"uppercase",
+                    background:active?`${THEME[tk].primary}18`:"transparent",
+                    border:active?`1px solid ${THEME[tk].primary}99`:"1px solid rgba(0,80,150,0.25)",
+                    color:active?THEME[tk].primary:"#2a4a6a",borderRadius:"4px",cursor:"pointer",
+                  }}>{i===0?"Compare":MODEL_LABELS[i-1]}</button>
+                );
+              })}
+            </div>
+
+            {/* Compare */}
+            {activeTab==="compare" && (
+              <div className="tab-s">
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"10px",marginBottom:"14px"}}>
+                  {[0,1,2].map(mi=>{
+                    const t=THEME[MODEL_THEMES[mi]], p=predictions[mi], sc=allScores[mi];
+                    return (
+                      <div key={mi} style={{...panel(MODEL_THEMES[mi]),textAlign:"center"}}>
+                        <div style={{fontSize:"9px",color:t.primary,fontWeight:"bold",marginBottom:"2px"}}>{MODEL_LABELS[mi]}</div>
+                        <div style={{fontSize:"7px",color:"#1e3a50",marginBottom:"12px"}}>{MODEL_SUBTITLES[mi]}</div>
+                        <div style={{display:"flex",justifyContent:"center",gap:"4px",flexWrap:"wrap",marginBottom:"8px"}}>
+                          {p.main.map(n=><B key={n} num={n} modelIdx={mi} size={44} freq={sc.find(s=>s.num===n)?.freq}/>)}
+                        </div>
+                        <div style={{borderTop:`1px solid ${t.border}`,paddingTop:"6px",marginBottom:"6px"}}>
+                          <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"3px"}}>MEGA BALL</div>
+                          <B num={p.mega} modelIdx={mi} isMega size={40} freq={allMB[mi].find(s=>s.num===p.mega)?.freq}/>
+                        </div>
+                        <div style={{fontSize:"8px",color:t.primary,fontWeight:"bold"}}>
+                          {p.main.join(" · ")} + {p.mega}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Consensus */}
+                {(()=>{
+                  const cm={};
+                  predictions.forEach(p=>p.main.forEach(n=>{cm[n]=(cm[n]||0)+1;}));
+                  const cons=Object.entries(cm).filter(([,c])=>c>=2).map(([n,c])=>({n:+n,c})).sort((a,b)=>b.c-a.c);
+                  const mb={};
+                  predictions.forEach(p=>{mb[p.mega]=(mb[p.mega]||0)+1;});
+                  const topMB=Object.entries(mb).sort((a,b)=>b[1]-a[1])[0];
+                  return (
+                    <div style={{...panel("fluid"),background:"rgba(10,20,40,0.8)",border:"1px solid rgba(255,200,0,0.2)"}}>
+                      <span style={lbl("#ffd600")}>Consensus — Numbers in 2+ Models</span>
+                      {cons.length===0
+                        ? <div style={{fontSize:"9px",color:"#1e4060",textAlign:"center"}}>Models diverge — no overlap</div>
+                        : <div style={{display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"center"}}>
+                            {cons.map(({n,c})=>(
+                              <div key={n} style={{textAlign:"center"}}>
+                                <div style={{width:"44px",height:"44px",borderRadius:"50%",
+                                  background:"radial-gradient(circle at 35% 35%,#1a1400,#040408)",
+                                  border:"2px solid #ffd600",boxShadow:"0 0 16px rgba(255,214,0,0.5)",
+                                  display:"flex",alignItems:"center",justifyContent:"center",
+                                  fontSize:"16px",fontWeight:"900",color:"#ffd600",margin:"0 auto"}}>{n}</div>
+                                <div style={{fontSize:"7px",color:"#3a2800",marginTop:"2px"}}>{c===3?"ALL 3":"2 of 3"}</div>
+                              </div>
+                            ))}
+                            {topMB[1]>=2 && (
+                              <div style={{textAlign:"center",marginLeft:"10px",borderLeft:"1px solid rgba(255,214,0,0.2)",paddingLeft:"10px"}}>
+                                <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"3px"}}>CONSENSUS MB</div>
+                                <div style={{width:"44px",height:"44px",borderRadius:"50%",
+                                  background:"radial-gradient(circle at 35% 35%,#2a1400,#040408)",
+                                  border:"2px solid #ffd600",boxShadow:"0 0 16px rgba(255,214,0,0.6)",
+                                  display:"flex",alignItems:"center",justifyContent:"center",
+                                  fontSize:"16px",fontWeight:"900",color:"#ffd600",margin:"0 auto"}}>{topMB[0]}</div>
+                                <div style={{fontSize:"7px",color:"#3a2000",marginTop:"2px"}}>{topMB[1]} of 3</div>
+                              </div>
+                            )}
+                          </div>
+                      }
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
-            <p style={{ textAlign: "center", color: "#37474f", fontSize: 11, marginTop: 28 }}>
-              For entertainment only. Results are randomly generated.
-            </p>
+            {/* Fluid tab */}
+            {activeTab==="fluid" && (
+              <div className="tab-s">
+                {(()=>{
+                  const mi=0, t=THEME.fluid, p=predictions[0];
+                  const sorted=[...fluidBalls].sort((a,b)=>b.score-a.score);
+                  const maxS=sorted[0].score, predSet=new Set(p.main);
+                  const det=selectedBall?.modelIdx===0?fluidBalls.find(s=>s.num===selectedBall.num):null;
+                  return (
+                    <>
+                      <div style={{...panel("fluid"),textAlign:"center"}}>
+                        <span style={lbl(t.primary)}>Navier-Stokes Fluid Dynamics</span>
+                        <div style={{display:"flex",justifyContent:"center",gap:"10px",flexWrap:"wrap",marginBottom:"12px",alignItems:"flex-end"}}>
+                          {p.main.map(n=><B key={n} num={n} modelIdx={0} size={62} showRank rank={sorted.findIndex(x=>x.num===n)+1} freq={fluidBalls.find(s=>s.num===n)?.freq}/>)}
+                          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"12px"}}>
+                            <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"3px"}}>MEGA BALL</div>
+                            <B num={p.mega} modelIdx={0} isMega size={62} freq={fluidMB.find(s=>s.num===p.mega)?.freq}/>
+                          </div>
+                        </div>
+                        <div style={{fontSize:"11px",color:t.primary,fontWeight:"bold"}}>{p.main.join("  ·  ")} + MB {p.mega}</div>
+                      </div>
+                      <div style={panel("fluid")}>
+                        <span style={lbl(t.secondary)}>Top 15 by Score</span>
+                        {sorted.slice(0,15).map((s,i)=>(
+                          <div key={s.num} onClick={()=>setSelectedBall({modelIdx:0,num:s.num})}
+                            style={{marginBottom:"4px",display:"flex",alignItems:"center",gap:"6px",cursor:"pointer"}}>
+                            <div style={{width:"16px",fontSize:"7px",color:"#1e4060",textAlign:"right"}}>#{i+1}</div>
+                            <div style={{width:"20px",fontSize:"10px",fontWeight:"bold",color:predSet.has(s.num)?"#fff":t.primary,textAlign:"center"}}>{s.num}</div>
+                            <div style={{flex:1,height:"5px",background:"rgba(0,20,50,0.8)",borderRadius:"3px",overflow:"hidden"}}>
+                              <div style={{height:"100%",width:`${(s.score/maxS)*100}%`,background:`linear-gradient(90deg,${t.primary}55,${t.primary})`,borderRadius:"3px"}}/>
+                            </div>
+                            <div style={{width:"42px",fontSize:"8px",color:"#2a5070",textAlign:"right"}}>{s.score.toFixed(3)}</div>
+                            <div style={{width:"8px",fontSize:"8px",color:"#ffd600"}}>{predSet.has(s.num)?"*":""}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {det && (
+                        <div style={panel("fluid")}>
+                          <span style={lbl(t.primary)}>Ball {det.num} · Metrics</span>
+                          <div style={{display:"flex",gap:"16px",flexWrap:"wrap"}}>
+                            <div style={{textAlign:"center"}}>
+                              <div style={{fontSize:"28px",fontWeight:"900",color:t.primary}}>{det.num}</div>
+                              <div style={{fontSize:"7px",color:"#1e4060"}}>{det.freq} draws</div>
+                              <div style={{fontSize:"7px",color:det.regime==="turbulent"?"#ff3333":det.regime==="transitional"?"#ff8c00":"#00e676",marginTop:"2px"}}>{det.regime?.toUpperCase()}</div>
+                            </div>
+                            <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px 16px"}}>
+                              {det.metrics?.map(([k,v])=>(
+                                <div key={k}><div style={{fontSize:"7px",color:"#1e4060"}}>{k}</div><div style={{fontSize:"11px",color:t.primary}}>{v}</div></div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Smart tab */}
+            {activeTab==="smart" && (
+              <div className="tab-s">
+                {(()=>{
+                  const t=THEME.smart, p=predictions[1];
+                  const sorted=[...smartBalls].sort((a,b)=>b.score-a.score);
+                  const maxS=sorted[0].score, predSet=new Set(p.main);
+                  const det=selectedBall?.modelIdx===1?smartBalls.find(s=>s.num===selectedBall.num):null;
+                  const sum=p.main.reduce((a,b)=>a+b,0);
+                  const odds=p.main.filter(n=>n%2!==0).length;
+                  const lows=p.main.filter(n=>n<=35).length;
+                  return (
+                    <>
+                      <div style={{...panel("smart"),textAlign:"center"}}>
+                        <span style={lbl(t.primary)}>Smart Play · Spring + Split Avoidance + Balance</span>
+                        <div style={{display:"flex",justifyContent:"center",gap:"10px",flexWrap:"wrap",marginBottom:"12px",alignItems:"flex-end"}}>
+                          {p.main.map(n=>{const s=smartBalls.find(x=>x.num===n);return(
+                            <div key={n} style={{textAlign:"center"}}>
+                              <B num={n} modelIdx={1} size={62} showRank rank={sorted.findIndex(x=>x.num===n)+1} freq={s?.freq}/>
+                              <div style={{fontSize:"7px",marginTop:"2px",color:s?.pop>1.5?"#ff6b35":s?.pop>1.2?"#ffb347":"#00e676"}}>{s?.tag}</div>
+                            </div>
+                          );})}
+                          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"12px"}}>
+                            <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"3px"}}>MEGA BALL</div>
+                            <B num={p.mega} modelIdx={1} isMega size={62} freq={smartMB.find(s=>s.num===p.mega)?.freq}/>
+                          </div>
+                        </div>
+                        <div style={{display:"inline-flex",gap:"12px",background:"rgba(0,30,15,0.6)",border:"1px solid rgba(0,200,100,0.2)",borderRadius:"8px",padding:"6px 14px",flexWrap:"wrap",justifyContent:"center",marginBottom:"8px"}}>
+                          {[[`Sum: ${sum}`,sum>=100&&sum<=175],
+                            [`Odd/Even: ${odds}/${5-odds}`,odds>=2&&odds<=3],
+                            [`Low/High: ${lows}/${5-lows}`,lows>=2&&lows<=3]].map(([label,pass])=>(
+                            <div key={label} style={{textAlign:"center"}}>
+                              <div style={{fontSize:"9px",color:pass?"#00e676":"#ff6b35",fontWeight:"bold"}}>{label}</div>
+                              <div style={{fontSize:"6px",color:"#1e4060"}}>{pass?"OK":"check"}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{fontSize:"11px",color:t.primary,fontWeight:"bold"}}>{p.main.join("  ·  ")} + MB {p.mega}</div>
+                      </div>
+                      <div style={panel("smart")}>
+                        <span style={lbl(t.secondary)}>Popularity Heatmap · Red = Overplayed</span>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(10,1fr)",gap:"3px",marginBottom:"6px"}}>
+                          {smartBalls.map(s=>{
+                            const bg=s.pop>1.8?"rgba(80,10,0,0.7)":s.pop>1.4?"rgba(60,20,0,0.7)":s.pop>1.1?"rgba(20,40,0,0.7)":"rgba(0,40,20,0.7)";
+                            const bc=s.pop>1.8?"#ff3333":s.pop>1.4?"#ff8c00":s.pop>1.1?"#ffb347":"#00e676";
+                            const isP=predSet.has(s.num);
+                            return (
+                              <div key={s.num} onClick={()=>setSelectedBall({modelIdx:1,num:s.num})}
+                                style={{background:bg,border:`1px solid ${isP?"#fff":bc}44`,borderRadius:"4px",
+                                  padding:"4px 1px",textAlign:"center",cursor:"pointer"}}>
+                                <div style={{fontSize:"clamp(8px,1.2vw,11px)",color:isP?"#fff":bc,fontWeight:isP?"bold":"normal"}}>{s.num}</div>
+                                <div style={{fontSize:"6px",color:"#1e4060"}}>{s.pop.toFixed(1)}x</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      {det && (
+                        <div style={panel("smart")}>
+                          <span style={lbl(t.primary)}>Ball {det.num} · Smart Metrics</span>
+                          <div style={{display:"flex",gap:"16px",flexWrap:"wrap"}}>
+                            <div style={{textAlign:"center"}}>
+                              <div style={{fontSize:"28px",fontWeight:"900",color:t.primary}}>{det.num}</div>
+                              <div style={{fontSize:"7px",color:"#1e4060"}}>{det.freq} draws</div>
+                              <div style={{fontSize:"7px",color:det.pop>1.5?"#ff6b35":det.pop>1.2?"#ffb347":"#00e676",marginTop:"2px"}}>{det.tag}</div>
+                            </div>
+                            <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px 16px"}}>
+                              {det.metrics?.map(([k,v])=>(
+                                <div key={k}><div style={{fontSize:"7px",color:"#1e4060"}}>{k}</div><div style={{fontSize:"11px",color:t.primary}}>{v}</div></div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Quantum tab */}
+            {activeTab==="quantum" && (
+              <div className="tab-s">
+                {(()=>{
+                  const t=THEME.quantum, p=predictions[2];
+                  const sorted=[...quantumBalls].sort((a,b)=>b.score-a.score);
+                  const maxS=sorted[0].score, predSet=new Set(p.main);
+                  const det=selectedBall?.modelIdx===2?quantumBalls.find(s=>s.num===selectedBall.num):null;
+                  const sc=(state)=>state==="RESONANT"?"#e040fb":state==="COLLAPSED"?"#ff3333":state==="DESTRUCTIVE"?"#448aff":"#a78bfa";
+                  return (
+                    <>
+                      <div style={{...panel("quantum"),textAlign:"center"}}>
+                        <span style={lbl(t.primary)}>Quantum Entanglement Model · For Science and Fun</span>
+                        <div style={{fontSize:"8px",color:"#2a1040",marginBottom:"12px",fontStyle:"italic"}}>
+                          psi(n) = sqrt(f/N) * e^(i*theta) where theta = 2pi*ago/T
+                        </div>
+                        <div style={{display:"flex",justifyContent:"center",gap:"10px",flexWrap:"wrap",marginBottom:"12px",alignItems:"flex-end"}}>
+                          {p.main.map(n=>{const s=quantumBalls.find(x=>x.num===n);return(
+                            <div key={n} style={{textAlign:"center"}}>
+                              <B num={n} modelIdx={2} size={62} showRank rank={sorted.findIndex(x=>x.num===n)+1} freq={s?.freq}/>
+                              <div style={{fontSize:"7px",color:sc(s?.state),marginTop:"2px"}}>{s?.state}</div>
+                            </div>
+                          );})}
+                          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"12px"}}>
+                            <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"3px"}}>MEGA BALL</div>
+                            <B num={p.mega} modelIdx={2} isMega size={62} freq={quantumMB.find(s=>s.num===p.mega)?.freq}/>
+                          </div>
+                        </div>
+                        <div style={{fontSize:"11px",color:t.primary,fontWeight:"bold"}}>{p.main.join("  ·  ")} + MB {p.mega}</div>
+                      </div>
+                      <div style={panel("quantum")}>
+                        <span style={lbl(t.secondary)}>Quantum State Field</span>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(10,1fr)",gap:"3px",marginBottom:"6px"}}>
+                          {quantumBalls.map(s=>{
+                            const isP=predSet.has(s.num), stc=sc(s.state), alpha=Math.min(s.score/maxS*1.4,1);
+                            return (
+                              <div key={s.num} onClick={()=>setSelectedBall({modelIdx:2,num:s.num})}
+                                style={{background:`rgba(30,0,50,${alpha*0.6})`,border:`1px solid ${isP?"#fff":stc}44`,
+                                  borderRadius:"4px",padding:"4px 1px",textAlign:"center",cursor:"pointer"}}>
+                                <div style={{fontSize:"clamp(8px,1.2vw,11px)",color:isP?"#fff":stc,fontWeight:isP?"bold":"normal"}}>{s.num}</div>
+                                <div style={{fontSize:"6px",color:"#2a1040"}}>{s.state==="RESONANT"?"~":s.state==="COLLAPSED"?"x":s.state==="DESTRUCTIVE"?"v":"o"}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{display:"flex",gap:"10px",flexWrap:"wrap"}}>
+                          {[["#e040fb","RESONANT"],["#ff3333","COLLAPSED"],["#448aff","DESTRUCTIVE"],["#a78bfa","SUPERPOSED"]].map(([c,l])=>(
+                            <div key={l} style={{display:"flex",alignItems:"center",gap:"3px"}}>
+                              <div style={{width:"7px",height:"7px",borderRadius:"50%",background:c}}/>
+                              <span style={{fontSize:"7px",color:"#3a2070"}}>{l}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={panel("quantum")}>
+                        <span style={lbl(t.secondary)}>Entangled Pairs</span>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+                          {ENTANGLED_PAIRS.map(([a,b])=>(
+                            <div key={`${a}-${b}`} style={{display:"flex",alignItems:"center",gap:"4px",
+                              background:"rgba(30,0,60,0.6)",border:"1px solid rgba(200,50,255,0.2)",
+                              borderRadius:"20px",padding:"3px 8px"}}>
+                              <span style={{fontSize:"11px",fontWeight:"bold",color:t.primary}}>{a}</span>
+                              <span style={{fontSize:"8px",color:"#3a1060"}}>--</span>
+                              <span style={{fontSize:"11px",fontWeight:"bold",color:t.primary}}>{b}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      {det && (
+                        <div style={panel("quantum")}>
+                          <span style={lbl(t.primary)}>Ball {det.num} · Quantum Metrics</span>
+                          <div style={{display:"flex",gap:"16px",flexWrap:"wrap"}}>
+                            <div style={{textAlign:"center"}}>
+                              <div style={{fontSize:"28px",fontWeight:"900",color:t.primary}}>{det.num}</div>
+                              <div style={{fontSize:"7px",color:"#1e1040"}}>{det.freq} draws</div>
+                              <div style={{fontSize:"7px",color:sc(det.state),marginTop:"2px"}}>{det.state}</div>
+                              {det.entanglement>0&&<div style={{fontSize:"7px",color:t.primary}}>ENTANGLED</div>}
+                            </div>
+                            <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px 16px"}}>
+                              {det.metrics?.map(([k,v])=>(
+                                <div key={k}><div style={{fontSize:"7px",color:"#1e1040"}}>{k}</div><div style={{fontSize:"11px",color:t.primary}}>{v}</div></div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            <div style={{marginTop:"12px",textAlign:"center",fontSize:"7px",color:"#0c1c2e",letterSpacing:"0.2em"}}>
+              DATA: LOTTOAMERICA.COM · {TOTAL_DRAWS.toLocaleString()} DRAWS · TICK {tick}
+            </div>
           </div>
         );
       }
 
-      ReactDOM.createRoot(document.getElementById("root")).render(<MegaMillionsFluid />);
+      ReactDOM.createRoot(document.getElementById("root")).render(<TriModelPredictor />);
     </script>
   </body>
 </html>
