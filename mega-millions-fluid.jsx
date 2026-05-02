@@ -147,6 +147,27 @@ function applyBalanceFilter(candidates) {
   return best ? best.sort((a,b)=>a-b) : candidates.slice(0,5).map(s=>s.num).sort((a,b)=>a-b);
 }
 
+function nextDrawDate() {
+  const now = new Date();
+  const day = now.getDay();
+  const daysUntil = [2,5].map(d=>(d-day+7)%7||7).sort((a,b)=>a-b)[0];
+  const next = new Date(now);
+  next.setDate(now.getDate()+daysUntil);
+  return next.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"});
+}
+function timeUntilNextDraw() {
+  const now = new Date();
+  const day = now.getDay();
+  const daysUntil = [2,5].map(d=>(d-day+7)%7||7).sort((a,b)=>a-b)[0];
+  const next = new Date(now);
+  next.setDate(now.getDate()+daysUntil);
+  next.setHours(23,0,0,0);
+  const diff = Math.max(next-now,0);
+  const h = Math.floor(diff/3600000);
+  const m = Math.floor((diff%3600000)/60000);
+  return `${h}h ${m}m`;
+}
+
 const THEME = {
   fluid:   { primary:"#00e5ff", secondary:"#0090b8", glow:"rgba(0,229,255,0.4)",   bg:"rgba(0,40,80,0.7)",   border:"rgba(0,200,255,0.25)" },
   smart:   { primary:"#00e676", secondary:"#007a40", glow:"rgba(0,230,118,0.4)",   bg:"rgba(0,50,20,0.7)",   border:"rgba(0,200,100,0.25)" },
@@ -166,9 +187,18 @@ export default function TriModelPredictor() {
   const [selectedBall, setSelectedBall] = useState(null);
   const [tick, setTick] = useState(0);
   const [showEV, setShowEV] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runProgress, setRunProgress] = useState(0);
+  const [drawDate] = useState(nextDrawDate);
+  const [countdown, setCountdown] = useState(timeUntilNextDraw);
 
   useEffect(()=>{
     const id=setInterval(()=>setTick(t=>t+1),2000);
+    return ()=>clearInterval(id);
+  },[]);
+
+  useEffect(()=>{
+    const id=setInterval(()=>setCountdown(timeUntilNextDraw()),60000);
     return ()=>clearInterval(id);
   },[]);
 
@@ -195,6 +225,18 @@ export default function TriModelPredictor() {
 
   const allScores = [fluidBalls, smartBalls, quantumBalls];
   const allMB     = [fluidMB, smartMB, quantumMB];
+
+  function handleRunModels() {
+    if (running) return;
+    setRunning(true);
+    setRunProgress(0);
+    let p=0;
+    const id=setInterval(()=>{
+      p+=Math.random()*12+4;
+      if(p>=100){clearInterval(id);setRunProgress(100);setTimeout(()=>setRunning(false),500);}
+      else setRunProgress(Math.min(p,99));
+    },100);
+  }
 
   const ticketCost = 2;
   const jackpotEV = (JACKPOT_M*1e6 * 0.60 * 0.63) / 302575350;
@@ -280,7 +322,33 @@ export default function TriModelPredictor() {
         <div style={{fontSize:"8px",color:"#2a4a6a",letterSpacing:"0.25em",marginTop:"4px"}}>
           THREE INDEPENDENT MODELS · {TOTAL_DRAWS.toLocaleString()} DRAWS · SEP 1996 → APR 2026
         </div>
-        <div style={{display:"flex",justifyContent:"center",gap:"8px",marginTop:"8px",flexWrap:"wrap"}}>
+
+        <div style={{display:"flex",justifyContent:"center",gap:"10px",marginTop:"10px",flexWrap:"wrap"}}>
+          <div style={{background:"rgba(0,20,50,0.8)",border:"1px solid rgba(0,200,255,0.2)",borderRadius:"8px",padding:"6px 18px",textAlign:"center"}}>
+            <div style={{fontSize:"7px",color:"#2a4a6a",letterSpacing:"0.2em"}}>NEXT DRAWING</div>
+            <div style={{fontSize:"11px",color:"#00e5ff",fontWeight:"bold",marginTop:"2px"}}>{drawDate}</div>
+          </div>
+          <div style={{background:"rgba(0,20,50,0.8)",border:"1px solid rgba(255,214,0,0.2)",borderRadius:"8px",padding:"6px 18px",textAlign:"center"}}>
+            <div style={{fontSize:"7px",color:"#2a4a6a",letterSpacing:"0.2em"}}>TIME UNTIL DRAW</div>
+            <div style={{fontSize:"11px",color:"#ffd600",fontWeight:"bold",marginTop:"2px"}}>{countdown}</div>
+          </div>
+          <button onClick={handleRunModels} disabled={running} style={{
+            padding:"6px 24px",fontSize:"10px",letterSpacing:"0.25em",textTransform:"uppercase",
+            background:running?"rgba(0,20,50,0.8)":"linear-gradient(135deg,rgba(0,60,120,0.9),rgba(0,180,255,0.25))",
+            border:`1px solid ${running?"rgba(0,150,255,0.3)":"rgba(0,200,255,0.6)"}`,
+            borderRadius:"8px",color:"#00e5ff",cursor:running?"not-allowed":"pointer",
+            boxShadow:running?"none":"0 0 18px rgba(0,200,255,0.25)",transition:"all 0.2s",
+          }}>
+            {running ? `⟳ ${Math.round(runProgress)}%` : "▶ RUN MODELS"}
+          </button>
+        </div>
+        {running && (
+          <div style={{maxWidth:"320px",margin:"8px auto 0",height:"3px",background:"rgba(0,30,60,0.8)",borderRadius:"2px",overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${runProgress}%`,background:"linear-gradient(90deg,#00e5ff,#00e676,#e040fb)",borderRadius:"2px",transition:"width 0.1s"}}/>
+          </div>
+        )}
+
+        <div style={{display:"flex",justifyContent:"center",gap:"8px",marginTop:"10px",flexWrap:"wrap"}}>
           {[0,1,2].map(i=>(
             <div key={i} style={{background:THEME[MODEL_THEMES[i]].bg,
               border:`1px solid ${THEME[MODEL_THEMES[i]].border}`,
@@ -451,6 +519,33 @@ export default function TriModelPredictor() {
       <div style={{marginTop:"12px",textAlign:"center",fontSize:"7px",color:"#0c1c2e",letterSpacing:"0.2em",position:"relative",zIndex:1}}>
         DATA: LOTTOAMERICA.COM · {TOTAL_DRAWS.toLocaleString()} DRAWS · SEP 1996→APR 2026 · TICK {tick}
       </div>
+
+      {running && (
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:100,
+          background:"rgba(2,8,18,0.92)",display:"flex",flexDirection:"column",
+          alignItems:"center",justifyContent:"center"}}>
+          <div style={{fontSize:"13px",color:"#00e5ff",letterSpacing:"0.3em",marginBottom:"24px",
+            animation:"pulse 1s ease-in-out infinite"}}>
+            COMPUTING TRI-MODEL ANALYSIS
+          </div>
+          <div style={{display:"flex",gap:"28px",marginBottom:"28px"}}>
+            {[["⚗","#00e5ff"],["🎯","#00e676"],["⚛","#e040fb"]].map(([icon,color],i)=>(
+              <div key={i} style={{fontSize:"32px",filter:`drop-shadow(0 0 10px ${color})`,
+                animation:`ballGlow${i} 0.8s ease-in-out infinite`,animationDelay:`${i*0.25}s`}}>
+                {icon}
+              </div>
+            ))}
+          </div>
+          <div style={{width:"300px",height:"5px",background:"rgba(0,30,60,0.8)",borderRadius:"3px",overflow:"hidden",marginBottom:"12px"}}>
+            <div style={{height:"100%",width:`${runProgress}%`,
+              background:"linear-gradient(90deg,#00e5ff,#00e676,#e040fb)",
+              borderRadius:"3px",transition:"width 0.1s"}}/>
+          </div>
+          <div style={{fontSize:"10px",color:"#2a5070",letterSpacing:"0.2em"}}>
+            {Math.round(runProgress)}% COMPLETE
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -535,8 +630,7 @@ function SmartModelView({scores,mbScores,prediction,S,Ball,selectedBall,setSelec
               <Ball num={n} modelIdx={1} size={66} showRank rank={sorted.findIndex(x=>x.num===n)+1} freq={s?.freq}/>
               <div style={{fontSize:"7px",marginTop:"3px",color:s?.pop>1.5?"#ff6b35":s?.pop>1.2?"#ffb347":"#00e676"}}>{s?.tag}</div>
             </div>
-          );})}
-          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"14px",marginLeft:"4px"}}>
+          );})}          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"14px",marginLeft:"4px"}}>
             <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"4px"}}>MEGA BALL</div>
             <Ball num={prediction.mega} modelIdx={1} isMega size={66} freq={mbScores.find(s=>s.num===prediction.mega)?.freq}/>
           </div>
@@ -625,8 +719,7 @@ function QuantumModelView({scores,mbScores,prediction,S,Ball,selectedBall,setSel
               <Ball num={n} modelIdx={2} size={66} showRank rank={sorted.findIndex(x=>x.num===n)+1} freq={s?.freq}/>
               <div style={{fontSize:"7px",color:stateColor(s?.state),marginTop:"3px"}}>{s?.state}</div>
             </div>
-          );})}
-          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"14px",marginLeft:"4px"}}>
+          );})}          <div style={{borderLeft:`1px solid ${t.border}`,paddingLeft:"14px",marginLeft:"4px"}}>
             <div style={{fontSize:"7px",color:"#3a2000",marginBottom:"4px"}}>MEGA BALL</div>
             <Ball num={prediction.mega} modelIdx={2} isMega size={66} freq={mbScores.find(s=>s.num===prediction.mega)?.freq}/>
           </div>
